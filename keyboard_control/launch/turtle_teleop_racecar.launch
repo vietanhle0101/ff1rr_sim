@@ -1,0 +1,6 @@
+<launch>
+    <node pkg="turtlesim" name="teleop" type="turtle_teleop_key" output="screen" launch-prefix="gnome-terminal -e">
+    </node>
+    <node pkg="keyboard_control" name="keyboard_node" type="keyboard_w_turtle_teleop.py" output="screen" launch-prefix="gnome-terminal -e">
+    </node>
+</launch>
