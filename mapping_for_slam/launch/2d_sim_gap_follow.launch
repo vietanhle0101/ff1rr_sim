@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="map" default="$(find wall_follow)/maps/levine_blocked.yaml" />
+  <include file="$(find f110_simulator)/launch/simulator.launch" pass_all_args="true" />
+
+  <node pkg="wall_follow" name="wall_follow_node" type="wall_follow.py" output="screen">
+	<param name="speed_max" type="double" value="0.5" />
+  </node>
+</launch>
