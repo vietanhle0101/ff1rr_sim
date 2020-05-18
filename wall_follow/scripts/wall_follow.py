@@ -77,7 +77,7 @@ class WallFollow:
         # TODO: Select velocity from discrete incremental rules
         angle_abs = abs(angle)
         if angle_abs > math.radians(20):
-            velocity = 0.3
+            velocity = 0.5
         elif angle_abs > math.radians(10):
             velocity = 1.0
         else:

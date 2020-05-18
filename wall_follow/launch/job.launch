@@ -1,0 +1,7 @@
+<launch>
+
+  <include file="$(find wall_follow)/launch/simulator_levine_blocked.launch"/>
+
+  <node name="planning" pkg="wall_follow" type="wall_follow.py" output="screen" launch-prefix="gnome-terminal -e"/>	
+
+</launch>
