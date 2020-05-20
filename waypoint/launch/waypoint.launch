@@ -1,0 +1,9 @@
+<launch>
+
+  <include file="$(find wall_follow)/launch/wall_follow.launch"/>
+  <include file="$(find pf_localization)/launch/localize.launch"/>
+
+  <node name="waypoint" pkg="waypoint" type="waypoint_logger.py">
+  </node>	
+
+</launch>
