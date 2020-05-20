@@ -7,6 +7,7 @@ import numpy as np
 import rospy
 from sensor_msgs.msg import LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped
+from geometry_msgs.msg import Twist
 
 class WallFollow:
     """ Implement Wall Following on the car
@@ -15,9 +16,11 @@ class WallFollow:
         #Topics & Subs, Pubs
         lidarscan_topic = '/scan'
         drive_topic = '/drive'
+        teleop_topic = '/turtle1/cmd_vel'
 
         self.lidar_sub = rospy.Subscriber(lidarscan_topic, LaserScan, self.lidar_callback) #TODO: Subscribe to LIDAR
         self.drive_pub = rospy.Publisher(drive_topic, AckermannDriveStamped) #TODO: Publish to drive
+        self.teleop_sub = rospy.Subscriber(teleop_topic, Twist, self.teleop_callback) # Subscribe to /keyboard from teleop_key
 
         # Parameters
         self.D = 1.0 # default D
@@ -28,7 +31,7 @@ class WallFollow:
         # PID CONTROL PARAMS
         self.kp = 10.0
         self.ki = 0.0
-        self.kd = 1
+        self.kd = 0.5
         self.prev_error = 0.0
         self.error = 0.0
         self.integral = 0.0
@@ -46,6 +49,14 @@ class WallFollow:
         self.drive_msg.header.frame_id = "laser"
         self.drive_msg.drive.steering_angle = 0.0
         self.drive_msg.drive.speed = 0.0
+
+        self.start = 0
+
+    def teleop_callback(self, msg):
+        if msg.linear.x > 0:    
+            self.start = 1
+        else:
+            self.start = 0 
 
     def rawDistances(self, data):
         # TODO: Calculate disance of the car to both sides
@@ -77,11 +88,11 @@ class WallFollow:
         # TODO: Select velocity from discrete incremental rules
         angle_abs = abs(angle)
         if angle_abs > math.radians(20):
-            velocity = 0.5
+            velocity = 0.3
         elif angle_abs > math.radians(10):
-            velocity = 1.0
+            velocity = 0.5
         else:
-            velocity = 2.0
+            velocity = 1.0
         return velocity
 
     def limitAngle(self, angle):
@@ -104,29 +115,32 @@ class WallFollow:
     def lidar_callback(self, data):
         # TODO: Estimate raw distances to both sides (a_l, b_l, a_r, b_r)
         # from laser scanned message (i.e., data)
-        a_l, b_l, a_r, b_r = self.rawDistances(data)
+        if self.start == 1:
+            a_l, b_l, a_r, b_r = self.rawDistances(data)
 
-        # TODO: Calculate distance to the left side (D_t+1 for left side)
-        D_l = self.distanceSide(a_l, b_l)
-        D_r = self.distanceSide(a_r, b_r)
-        self.D = (D_r + D_l)/2
+            # TODO: Calculate distance to the left side (D_t+1 for left side)
+            D_l = self.distanceSide(a_l, b_l)
+            D_r = self.distanceSide(a_r, b_r)
+            self.D = (D_r + D_l)/2
 
+            # TODO: Calculate prev_error and error
+            # prev_error store the previous error
+            # error is the current error, error = D - D_t+1
+            self.prev_error = self.error
+            self.error = D_l - self.D
 
-        # TODO: Calculate prev_error and error
-        # prev_error store the previous error
-        # error is the current error, error = D - D_t+1
-        self.prev_error = self.error
-        self.error = D_l - self.D
+            #TODO: Compute steering angle and velocity usiing current error and previous error
+            self.angle, self.velocity = self.pid_control(self.error, self.prev_error)
 
-        #TODO: Compute steering angle and velocity usiing current error and previous error
-        self.angle, self.velocity = self.pid_control(self.error, self.prev_error)
-
-        ## TODO: Update driving message
-        self.drive_msg.header.stamp = rospy.Time.now()
-        self.drive_msg.drive.steering_angle = self.angle # using limitAngle to limit the angle in the range [min_angle, max_angle]
-        self.drive_msg.drive.speed = self.velocity
-        rospy.loginfo("steer %.3f - speed %1.3f", self.drive_msg.drive.steering_angle, self.drive_msg.drive.speed)
-
+            ## TODO: Update driving message
+            self.drive_msg.header.stamp = rospy.Time.now()
+            self.drive_msg.drive.steering_angle = self.angle # using limitAngle to limit the angle in the range [min_angle, max_angle]
+            self.drive_msg.drive.speed = self.velocity
+            # rospy.loginfo("steer %.3f - speed %1.3f", self.drive_msg.drive.steering_angle, self.drive_msg.drive.speed)
+        else:
+            self.drive_msg.header.stamp = rospy.Time.now()
+            self.drive_msg.drive.steering_angle = 0.0
+            self.drive_msg.drive.speed = 0.0 
 
 def main(args):
     rospy.init_node("WallFollow_node", anonymous=True)
