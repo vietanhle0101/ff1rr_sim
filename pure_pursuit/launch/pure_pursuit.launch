@@ -1,0 +1,15 @@
+<launch>
+
+  <include file="$(find pure_pursuit)/launch/simulator_levine_blocked.launch"/>
+  <include file="$(find pf_localization)/launch/localize.launch"/>
+
+  <node name="teleop" pkg="turtlesim" type="turtle_teleop_key" output="screen" launch-prefix="gnome-terminal -e">
+  </node>
+
+  <arg name="wp_file" default="/home/vietanhle/data_file/wp-selected-50.csv"/>
+
+  <node name="tracking" pkg="pure_pursuit" type="pure_pursuit.py"> 
+        <param name="wp_file" value="$(arg wp_file)"/>
+  </node>	
+
+</launch>
