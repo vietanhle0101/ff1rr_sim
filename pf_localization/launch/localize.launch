@@ -84,4 +84,7 @@
 	}'" 
 	output="screen"/>
 
+	<!-- Show in Rviz   -->
+	<node name="rviz_pf" pkg="rviz" type="rviz" args="-d $(find pf_localization)/rviz/pf.rviz"/>
+
 </launch>
