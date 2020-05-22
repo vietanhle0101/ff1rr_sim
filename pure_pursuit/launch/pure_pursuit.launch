@@ -6,7 +6,7 @@
   <node name="teleop" pkg="turtlesim" type="turtle_teleop_key" output="screen" launch-prefix="gnome-terminal -e">
   </node>
 
-  <arg name="wp_file" default="/home/vietanhle/data_file/wp-selected-50.csv"/>
+  <arg name="wp_file" default="$(env HOME)/data_file/wp-selected-50.csv"/>
 
   <node name="tracking" pkg="pure_pursuit" type="pure_pursuit.py"> 
         <param name="wp_file" value="$(arg wp_file)"/>
