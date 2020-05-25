@@ -1,0 +1,12 @@
+<launch>
+
+  <include file="$(find mpc_tracking)/launch/simulator_levine_blocked.launch"/>
+  <include file="$(find pf_localization)/launch/localize.launch"/>
+
+  <arg name="wp_file" default="/home/vietanhle/data_file/wp-good.csv"/>
+
+  <node name="tracking" pkg="mpc_tracking" type="mpc_tracking.py"> 
+        <param name="wp_file" value="$(arg wp_file)"/> -->
+  </node>	
+
+</launch>
