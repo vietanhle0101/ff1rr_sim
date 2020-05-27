@@ -22,7 +22,7 @@ class MPC_tracking:
         self.v = 0; self.delta = 0
         self.delta_min = -0.4; self.delta_max = 0.4
         self.v_min = 0; self.v_max = 2
-        self.ramp_v_min = -1; self.ramp_v_max = 1
+        self.ramp_v_min = -0.2; self.ramp_v_max = 0.2
         self.ramp_delta_min = -np.pi/6; self.ramp_delta_max = np.pi/6
 
         self.T = 0.05; self.H = 20
@@ -51,8 +51,8 @@ class MPC_tracking:
         self.pose_sub = rospy.Subscriber(pf_pose_topic, PoseStamped, self.pose_callback)
 
         # Loading reference trajectory from csv file
-        # input_file = rospy.get_param("~wp_file")
-        input_file = "/home/vietanhle/data_file/wp-selected-2.csv"
+        input_file = rospy.get_param("~wp_file")
+        # input_file = "/home/lva/data_file/wp-for-mpc.csv"
         x_list = []
         y_list = []
         with open(input_file) as csv_file:
@@ -100,12 +100,13 @@ class MPC_tracking:
         self.U = self.opti.variable(2, self.H)
         self.X = self.opti.variable(3, self.H+1)
         self.P_1 = self.opti.parameter(3)
-        self.P_2 = self.opti.parameter(2, self.H)
+        self.P_2 = self.opti.parameter(2)
+        self.P_3 = self.opti.parameter(2, self.H)
 
         for k in range(self.H):
             p_H = self.X[0:2, k+1]
             u_H = self.U[:,k]
-            self.J += mtimes([(p_H-self.P_2[:,k]).T, self.Q, (p_H-self.P_2[:,k])]) + mtimes([u_H.T, self.R, u_H]) 
+            self.J += mtimes([(p_H-self.P_3[:,k]).T, self.Q, (p_H-self.P_3[:,k])]) + mtimes([u_H.T, self.R, u_H]) 
             
         self.opti.minimize(self.J) 
         
@@ -118,10 +119,15 @@ class MPC_tracking:
         self.opti.subject_to(self.delta_min <= self.U[1,:])
         self.opti.subject_to(self.U[1,:] <= self.delta_max)
         
-        self.opti.subject_to(self.ramp_v_min <= self.U[0,1:-1] - self.U[0,0:-2])
-        self.opti.subject_to(self.U[0,1:-1] - self.U[0,0:-2] <= self.ramp_v_max)
-        self.opti.subject_to(self.ramp_delta_min <= self.U[1,1:-1] - self.U[1,0:-2])
-        self.opti.subject_to(self.U[1,1:-1] - self.U[1,0:-2] <= self.ramp_delta_max)
+        self.opti.subject_to(self.ramp_v_min <= self.U[0,1:] - self.U[0,0:-1])
+        self.opti.subject_to(self.U[0,1:] - self.U[0,0:-1] <= self.ramp_v_max)
+        self.opti.subject_to(self.ramp_delta_min <= self.U[1,1:] - self.U[1,0:-1])
+        self.opti.subject_to(self.U[1,1:] - self.U[1,0:-1] <= self.ramp_delta_max)
+
+        self.opti.subject_to(self.ramp_v_min <= self.U[0,0] - self.P_2[0])
+        self.opti.subject_to(self.U[0,0] - self.P_2[0] <= self.ramp_v_max)
+        self.opti.subject_to(self.ramp_delta_min <= self.U[1,0] - self.P_2[1])
+        self.opti.subject_to(self.U[1,0] - self.P_2[1] <= self.ramp_delta_max)
 
         self.opti.subject_to(self.X[:,0] == self.P_1[0:3])
         
@@ -131,8 +137,10 @@ class MPC_tracking:
 
     def solveMPC(self, ref):
         state = np.array([self.x, self.y, self.th])
+        input = np.array([self.v, self.delta])
         self.opti.set_value(self.P_1, state)
-        self.opti.set_value(self.P_2, ref)
+        self.opti.set_value(self.P_2, input)
+        self.opti.set_value(self.P_3, ref)
         sol = self.opti.solve()
         sol = sol.value(self.U)
         self.v = sol[0,0]
