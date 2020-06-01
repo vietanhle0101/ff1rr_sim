@@ -55,7 +55,7 @@ class MPC_tracking:
 
         # Loading reference trajectory from csv file
         # input_file = rospy.get_param("~wp_file")
-        input_file = "/home/vietanhle/data_file/wp-mpc-200ms.csv"
+        input_file = "/home/lva/data_file/wp-mpc-200ms.csv"
         x_list = []; y_list = []
         with open(input_file) as csv_file:
             reader = csv.reader(csv_file)
@@ -74,11 +74,11 @@ class MPC_tracking:
 
 
         # Load gp model from file, currently using sparse GP model
-        m_dict = pickle.load(open("/home/vietanhle/lva_ws/src/mpc_tracking/scripts/sparse_dx.pkl", "rb"))
+        m_dict = pickle.load(open("/home/lva/catkin_ws/src/mpc_tracking/scripts/sparse_dx.pkl", "rb"))
         self.gp_dx = sparse_GP(m_dict)
-        m_dict = pickle.load(open("/home/vietanhle/lva_ws/src/mpc_tracking/scripts/sparse_dy.pkl", "rb"))
+        m_dict = pickle.load(open("/home/lva/catkin_ws/src/mpc_tracking/scripts/sparse_dy.pkl", "rb"))
         self.gp_dy = sparse_GP(m_dict)
-        m_dict = pickle.load(open("/home/vietanhle/lva_ws/src/mpc_tracking/scripts/sparse_dth.pkl", "rb"))
+        m_dict = pickle.load(open("/home/lva/catkin_ws/src/mpc_tracking/scripts/sparse_dth.pkl", "rb"))
         self.gp_dth = sparse_GP(m_dict)
 
     def pose_callback(self, msg):
@@ -138,10 +138,10 @@ class MPC_tracking:
         self.opti.subject_to(self.delta_min <= self.U[1,:])
         self.opti.subject_to(self.U[1,:] <= self.delta_max)
         
-        # self.opti.subject_to(self.ramp_v_min <= self.U[0,1:] - self.U[0,0:-1])
-        # self.opti.subject_to(self.U[0,1:] - self.U[0,0:-1] <= self.ramp_v_max)
-        # self.opti.subject_to(self.ramp_delta_min <= self.U[1,1:] - self.U[1,0:-1])
-        # self.opti.subject_to(self.U[1,1:] - self.U[1,0:-1] <= self.ramp_delta_max)
+        self.opti.subject_to(self.ramp_v_min <= self.U[0,1:] - self.U[0,0:-1])
+        self.opti.subject_to(self.U[0,1:] - self.U[0,0:-1] <= self.ramp_v_max)
+        self.opti.subject_to(self.ramp_delta_min <= self.U[1,1:] - self.U[1,0:-1])
+        self.opti.subject_to(self.U[1,1:] - self.U[1,0:-1] <= self.ramp_delta_max)
 
         self.opti.subject_to(self.ramp_v_min <= self.U[0,0] - self.P_2[0])
         self.opti.subject_to(self.U[0,0] - self.P_2[0] <= self.ramp_v_max)
@@ -152,7 +152,7 @@ class MPC_tracking:
         
         p_opts = {'verbose_init': False}
         s_opts = {'tol': 0.01, 'print_level': 0, 'max_iter': 50}
-        self.opti.solver('ipopt', p_opts, s_opts)
+        self.opti.solver('knitro', p_opts, s_opts)
 
     def solveMPC(self, ref):
         state = np.array([self.x, self.y, self.th])
@@ -192,7 +192,7 @@ class MPC_tracking:
 def main():
     rospy.init_node('gp_mpc_node')
     car = MPC_tracking()
-    car.set_weight(1*np.eye(2), np.diag([0 ,2]))
+    car.set_weight(1*np.eye(2), np.diag([0.01, 2]))
     car.formulate_mpc()
     rate = rospy.Rate(1/car.T)
     while not rospy.is_shutdown():
