@@ -12,6 +12,15 @@ import sys
 sys.path.append(r"casadiinstalldir")
 from casadi import *
 
+import atexit
+from os.path import expanduser
+from time import gmtime, strftime
+
+home = expanduser('~')
+file = open(strftime(home+'/training-%Y-%m-%d-%H-%M-%S',gmtime())+'.csv', 'w')
+
+def shutdown():
+    file.close()
 
 class MPC_tracking:
     """
@@ -19,14 +28,16 @@ class MPC_tracking:
     """
     def __init__(self):
         self.x = 0; self.y = 0; self.th = 0
+        self.gt_x = 0; self.gt_y = 0; self.gt_th = 0
         self.v = 0; self.delta = 0
         self.delta_min = -0.4; self.delta_max = 0.4
         self.v_min = 0; self.v_max = 2
-        self.ramp_v_min = -0.2; self.ramp_v_max = 0.2
-        self.ramp_delta_min = -np.pi/6; self.ramp_delta_max = np.pi/6
 
-        self.T = 0.05; self.H = 20
+        self.T = 0.2; self.H = 10
         self.lf = 0.16; self.lr = 0.17
+
+        self.ramp_v_min = -5*self.T; self.ramp_v_max = 5*self.T
+        self.ramp_delta_min = -np.pi*self.T; self.ramp_delta_max = np.pi*self.T
 
         self.J = 0; # Objective function
         self.g = [] # Constraints
@@ -45,10 +56,13 @@ class MPC_tracking:
         self.drive_msg.drive.speed = 0.0
 
         drive_topic = '/drive'
-        pf_pose_topic = 'pf/viz/inferred_pose'
+        pf_pose_topic = '/pf/viz/inferred_pose'
+        gt_pose_topic = '/gt_pose'
 
         self.drive_pub = rospy.Publisher(drive_topic, AckermannDriveStamped) # Publish to drive
         self.pose_sub = rospy.Subscriber(pf_pose_topic, PoseStamped, self.pose_callback)
+        self.gt_pose_sub = rospy.Subscriber(gt_pose_topic, PoseStamped, self.gt_pose_callback)
+
 
         # Loading reference trajectory from csv file
         input_file = rospy.get_param("~wp_file")
@@ -69,6 +83,18 @@ class MPC_tracking:
             else:
                 self.ref[0,i] = x_list[-1]
                 self.ref[1,i] = y_list[-1]
+
+    def gt_pose_callback(self, msg):
+        self.gt_x = msg.pose.position.x
+        self.gt_y = msg.pose.position.y
+
+        quaternion = np.array([msg.pose.orientation.x, 
+                    msg.pose.orientation.y, 
+                    msg.pose.orientation.z, 
+                    msg.pose.orientation.w])
+
+        euler = tf.transformations.euler_from_quaternion(quaternion)
+        self.gt_th = euler[2] 
 
     def pose_callback(self, msg):
         self.start = 1 # Start MPC controller whenever localization is ready
@@ -137,9 +163,9 @@ class MPC_tracking:
 
     def solveMPC(self, ref):
         state = np.array([self.x, self.y, self.th])
-        input = np.array([self.v, self.delta])
+        control = np.array([self.v, self.delta])
         self.opti.set_value(self.P_1, state)
-        self.opti.set_value(self.P_2, input)
+        self.opti.set_value(self.P_2, control)
         self.opti.set_value(self.P_3, ref)
         sol = self.opti.solve()
         sol = sol.value(self.U)
@@ -147,13 +173,23 @@ class MPC_tracking:
         self.delta = sol[1,0]
 
     def run(self):
-        if self.start == 1 and self.idx < self.wp_len:
-            self.solveMPC(self.ref[:, self.idx:self.idx+self.H])
-            self.idx += 1
-            self.drive_msg.header.stamp = rospy.Time.now()
-            self.drive_msg.drive.speed = self.v
-            self.drive_msg.drive.steering_angle = self.delta 
-            rospy.loginfo("steer %.3f - speed %1.3f", self.drive_msg.drive.steering_angle, self.drive_msg.drive.speed)
+        if self.start == 1:
+            if self.idx < self.wp_len:
+                self.solveMPC(self.ref[:, self.idx:self.idx+self.H])
+                self.idx += 1
+                self.drive_msg.header.stamp = rospy.Time.now()
+                self.drive_msg.drive.speed = self.v
+                self.drive_msg.drive.steering_angle = self.delta 
+                rospy.loginfo("steer %.3f - speed %1.3f", self.drive_msg.drive.steering_angle, self.drive_msg.drive.speed)
+            else:
+                self.idx = 0
+                self.solveMPC(self.ref[:, self.idx:self.idx+self.H])
+                self.idx += 1
+                self.drive_msg.header.stamp = rospy.Time.now()
+                self.drive_msg.drive.speed = self.v
+                self.drive_msg.drive.steering_angle = self.delta 
+                rospy.loginfo("steer %.3f - speed %1.3f", self.drive_msg.drive.steering_angle, self.drive_msg.drive.speed)
+
         else:
             self.drive_msg.header.stamp = rospy.Time.now()
             self.drive_msg.drive.steering_angle = 0.0
@@ -162,13 +198,15 @@ class MPC_tracking:
         self.drive_pub.publish(self.drive_msg)
 
 def main():
+    atexit.register(shutdown)
     rospy.init_node('pure_pursuit_node')
     car = MPC_tracking()
-    car.set_weight(1*np.eye(2), np.diag([0.1,2]))
+    car.set_weight(10*np.eye(2), np.diag([0.1, 2]))
     car.formulate_mpc()
     rate = rospy.Rate(1/car.T)
     while not rospy.is_shutdown():
         car.run()
+        file.write('%f, %f, %f, %f, %f, %f, %f, %f\n' % (car.x, car.y, car.th, car.v, car.delta, car.gt_x, car.gt_y, car.gt_th))
         rate.sleep()
 
 if __name__ == '__main__':

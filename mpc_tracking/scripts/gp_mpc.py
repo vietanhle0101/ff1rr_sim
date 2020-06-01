@@ -20,7 +20,7 @@ class MPC_tracking:
     The class that handles mpc controller for tracking the waypoints using casadi and ipopt.
     """
     def __init__(self):
-        self.T = 0.2; self.H = 2
+        self.T = 0.2; self.H = 10
 
         self.x = 0; self.y = 0; self.th = 0
         self.v = 0; self.delta = 0
@@ -102,9 +102,9 @@ class MPC_tracking:
         f_mean_dx = Function('f_mean_dx', [gp_in], [mean])
         mean = self.gp_dy.predict(gp_in)[0]
         f_mean_dy = Function('f_mean_dy', [gp_in], [mean])
-        gp_in = SX.sym('gp_in',2,1)
-        mean = self.gp_dth.predict(gp_in)[0]
-        f_mean_dth = Function('f_mean_dth', [gp_in], [mean])
+        gp_in2 = SX.sym('gp_in2',2,1)
+        mean = self.gp_dth.predict(gp_in2)[0]
+        f_mean_dth = Function('f_mean_dth', [gp_in2], [mean])
         
         x = SX.sym('x'); y = SX.sym('y'); th = SX.sym('th') 
         v = SX.sym('v'); delta = SX.sym('delta') 
@@ -152,7 +152,7 @@ class MPC_tracking:
         
         p_opts = {'verbose_init': False}
         s_opts = {'tol': 0.01, 'print_level': 0, 'max_iter': 50}
-        self.opti.solver('knitro', p_opts, s_opts)
+        self.opti.solver('ipopt', p_opts, s_opts)
 
     def solveMPC(self, ref):
         state = np.array([self.x, self.y, self.th])
@@ -192,7 +192,7 @@ class MPC_tracking:
 def main():
     rospy.init_node('gp_mpc_node')
     car = MPC_tracking()
-    car.set_weight(1*np.eye(2), np.diag([0.01, 2]))
+    car.set_weight(5*np.eye(2), np.diag([0.1, 10]))
     car.formulate_mpc()
     rate = rospy.Rate(1/car.T)
     while not rospy.is_shutdown():
