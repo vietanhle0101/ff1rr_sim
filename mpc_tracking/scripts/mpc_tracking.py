@@ -161,12 +161,12 @@ class MPC_tracking:
         s_opts = {'tol': 1e-3, 'print_level': 0, 'max_iter': 100}
         self.opti.solver('ipopt', p_opts, s_opts)
 
-    def solveMPC(self, ref):
+    def solveMPC(self):
         state = np.array([self.x, self.y, self.th])
         control = np.array([self.v, self.delta])
         self.opti.set_value(self.P_1, state)
         self.opti.set_value(self.P_2, control)
-        self.opti.set_value(self.P_3, ref)
+        self.opti.set_value(self.P_3, self.ref[:, self.idx:self.idx+self.H])
         sol = self.opti.solve()
         sol = sol.value(self.U)
         self.v = sol[0,0]
@@ -175,7 +175,7 @@ class MPC_tracking:
     def run(self):
         if self.start == 1:
             if self.idx < self.wp_len:
-                self.solveMPC(self.ref[:, self.idx:self.idx+self.H])
+                self.solveMPC()
                 self.idx += 1
                 self.drive_msg.header.stamp = rospy.Time.now()
                 self.drive_msg.drive.speed = self.v
