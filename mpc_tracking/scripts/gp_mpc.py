@@ -59,12 +59,17 @@ class MPC_tracking:
         step = 8
         x_list = data[::step, 0] 
         y_list = data[::step, 1]
-        Ar_list = data[::step, 2:4]
-        br_list = data[::step, 4]
+        A_list = data[::step, 2:4]
+        b_list = data[::step, 4]
+        Dl_list = data[::step, 5]
+        Dr_list = data[::step, 6]
+        
         self.wp_len = len(x_list)
         self.ref = np.hstack([np.vstack([x_list, y_list]), [[x_list[-1]], [y_list[-1]]]*np.ones(self.H)])
-        self.Ar = np.vstack([Ar_list, Ar_list[-1, :]*np.ones((self.H,2))])
-        self.br = np.hstack([br_list, br_list[-1]*np.ones(self.H)])
+        self.A = np.vstack([A_list, A_list[-1, :]*np.ones((self.H,2))])
+        self.b = np.hstack([b_list, b_list[-1]*np.ones(self.H)])
+        self.Dl = np.hstack([Dl_list, Dl_list[-1]*np.ones(self.H)])
+        self.Dr = np.hstack([Dr_list, Dr_list[-1]*np.ones(self.H)])
 
         # Load gp model from file, currently using sparse GP model
         m_dict = pickle.load(open("/home/lva/catkin_ws/src/mpc_tracking/scripts/sparse_dx.pkl", "rb"))
@@ -86,8 +91,8 @@ class MPC_tracking:
         euler = tf.transformations.euler_from_quaternion(quaternion)
         self.th = euler[2] 
 
-    def set_weight(self, Q, R):
-        self.Q = Q; self.R = R
+    def set_weight(self, Q, R, S):
+        self.Q = Q; self.R = R; self.S = S
     
     def formulate_mpc(self):
         gp_in = SX.sym('gp_in',4,1)
@@ -115,16 +120,20 @@ class MPC_tracking:
         self.P_1 = self.opti.parameter(3)
         self.P_2 = self.opti.parameter(2)
         self.P_3 = self.opti.parameter(2, self.H)
-        self.P_Ar = self.opti.parameter(self.H, 2)
-        self.P_br = self.opti.parameter(self.H)
+        self.P_A = self.opti.parameter(self.H, 2)
+        self.P_b = self.opti.parameter(self.H)
+        self.P_Dl = self.opti.parameter(self.H)
+        self.P_Dr = self.opti.parameter(self.H)
 
         for k in range(self.H):
             p_H = self.X[0:2, k+1]
-            u_H = self.U[:,k]
-            self.J += self.Q[0]*(p_H[0]-self.P_3[0,k])**2 + self.Q[1]*(p_H[1]-self.P_3[1,k])**2 + self.R[0]*u_H[0]**2 + self.R[1]*u_H[1]**2 
-            # mtimes([(p_H-self.P_3[:,k]).T, self.Q, (p_H-self.P_3[:,k])]) + mtimes([u_H.T, self.R, u_H])
-            self.opti.subject_to(mtimes(self.P_Ar[k, :], p_H) - self.P_br[k] <= 0.2)
-            self.opti.subject_to(mtimes(self.P_Ar[k, :], p_H) - self.P_br[k] >= -0.2)  
+            self.J += self.Q[0]*(p_H[0]-self.P_3[0,k])**2 + self.Q[1]*(p_H[1]-self.P_3[1,k])**2 + self.R[0]*self.U[0,k]**2 + self.R[1]*self.U[1,k]**2 
+            # Race track constraints, does not work now, try soft constraints later
+            # self.opti.subject_to(mtimes(self.P_A[k, :], p_H) - self.P_b[k] <= self.P_Dr[k]*sqrt(self.P_A[k, 0]**2 + self.P_A[k, 1]**2))
+            # self.opti.subject_to(mtimes(self.P_A[k, :], p_H) - self.P_b[k] >= -self.P_Dl[k]*sqrt(self.P_A[k, 0]**2 + self.P_A[k, 1]**2))
+
+        for k in range(self.H-1):
+            self.J += self.S[0]*(self.U[0,k+1] - self.U[0,k])**2 + self.S[1]*(self.U[1,k+1] - self.U[1,k])**2 
             
         self.opti.minimize(self.J) 
         
@@ -149,7 +158,7 @@ class MPC_tracking:
         self.opti.subject_to(self.X[:,0] == self.P_1[0:3])
         
         p_opts = {'verbose_init': False}
-        s_opts = {'tol': 0.01, 'print_level': 0, 'max_iter': 50}
+        s_opts = {'tol': 0.01, 'print_level': 0, 'max_iter': 100}
         self.opti.solver('ipopt', p_opts, s_opts)
 
         # Warm up
@@ -158,8 +167,10 @@ class MPC_tracking:
         self.opti.set_value(self.P_1, state)
         self.opti.set_value(self.P_2, input)
         self.opti.set_value(self.P_3, self.ref[:, 0:self.H])
-        self.opti.set_value(self.P_Ar, self.Ar[0:self.H, :])
-        self.opti.set_value(self.P_br, self.br[0:self.H])
+        self.opti.set_value(self.P_A, self.A[0:self.H, :])
+        self.opti.set_value(self.P_b, self.b[0:self.H])
+        self.opti.set_value(self.P_Dl, self.Dl[0:self.H])        
+        self.opti.set_value(self.P_Dr, self.Dr[0:self.H])
         
         sol = self.opti.solve()
         self.opti.set_initial(self.U, sol.value(self.U))
@@ -171,8 +182,10 @@ class MPC_tracking:
         self.opti.set_value(self.P_1, state)
         self.opti.set_value(self.P_2, input)
         self.opti.set_value(self.P_3, self.ref[:, self.idx:self.idx+self.H])
-        self.opti.set_value(self.P_Ar, self.Ar[self.idx:self.idx+self.H, :])
-        self.opti.set_value(self.P_br, self.br[self.idx:self.idx+self.H])
+        self.opti.set_value(self.P_A, self.A[self.idx:self.idx+self.H, :])
+        self.opti.set_value(self.P_b, self.b[self.idx:self.idx+self.H])
+        self.opti.set_value(self.P_Dl, self.Dl[self.idx:self.idx+self.H])        
+        self.opti.set_value(self.P_Dr, self.Dr[self.idx:self.idx+self.H])
         try:
             sol = self.opti.solve()
         except RuntimeError:
@@ -203,7 +216,7 @@ class MPC_tracking:
 def main():
     rospy.init_node('gp_mpc_node')
     car = MPC_tracking()
-    car.set_weight(np.array([5,5]), np.array([0.1, 10]))
+    car.set_weight(np.array([10,10]), np.array([0.1, 10]), np.array([1, 1]))
     car.formulate_mpc()
     rate = rospy.Rate(1/car.T)
     while not rospy.is_shutdown():

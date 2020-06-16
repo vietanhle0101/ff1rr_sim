@@ -6,6 +6,7 @@ from ackermann_msgs.msg import AckermannDriveStamped
 
 import csv
 import numpy as np
+from numpy import genfromtxt
 from numpy import linalg as LA
 import tf
 import sys
@@ -16,8 +17,8 @@ import atexit
 from os.path import expanduser
 from time import gmtime, strftime
 
-home = expanduser('~')
-file = open(strftime(home+'/training-%Y-%m-%d-%H-%M-%S',gmtime())+'.csv', 'w')
+# home = expanduser('~')
+# file = open(strftime(home+'/training-%Y-%m-%d-%H-%M-%S',gmtime())+'.csv', 'w')
 
 def shutdown():
     file.close()
@@ -65,24 +66,24 @@ class MPC_tracking:
 
 
         # Loading reference trajectory from csv file
-        input_file = rospy.get_param("~wp_file")
-        # input_file = "/home/lva/data_file/wp-for-mpc.csv"
-        x_list = []
-        y_list = []
-        with open(input_file) as csv_file:
-            reader = csv.reader(csv_file)
-            for line in reader:
-                x_list.append(float(line[0])) 
-                y_list.append(float(line[1]))
+        # input_file = rospy.get_param("~wp_file")
+        input_file = "/home/lva/data_file/data-for-mpc.csv"
+        data = genfromtxt(input_file, delimiter=',')
+        step = 8
+        x_list = data[::step, 0] 
+        y_list = data[::step, 1]
+        A_list = data[::step, 2:4]
+        b_list = data[::step, 4]
+        Dl_list = data[::step, 5]
+        Dr_list = data[::step, 6]
+        
         self.wp_len = len(x_list)
-        self.ref = np.empty((2, self.wp_len + self.H))
-        for i in range(self.wp_len + self.H):
-            if i < self.wp_len:
-                self.ref[0,i] = x_list[i]
-                self.ref[1,i] = y_list[i] 
-            else:
-                self.ref[0,i] = x_list[-1]
-                self.ref[1,i] = y_list[-1]
+        self.ref = np.hstack([np.vstack([x_list, y_list]), [[x_list[-1]], [y_list[-1]]]*np.ones(self.H)])
+        self.A = np.vstack([A_list, A_list[-1, :]*np.ones((self.H,2))])
+        self.b = np.hstack([b_list, b_list[-1]*np.ones(self.H)])
+        self.Dl = np.hstack([Dl_list, Dl_list[-1]*np.ones(self.H)])
+        self.Dr = np.hstack([Dr_list, Dr_list[-1]*np.ones(self.H)])
+
 
     def gt_pose_callback(self, msg):
         self.gt_x = msg.pose.position.x
@@ -128,11 +129,20 @@ class MPC_tracking:
         self.P_1 = self.opti.parameter(3)
         self.P_2 = self.opti.parameter(2)
         self.P_3 = self.opti.parameter(2, self.H)
+        self.P_A = self.opti.parameter(self.H, 2)
+        self.P_b = self.opti.parameter(self.H)
+        self.P_Dl = self.opti.parameter(self.H)
+        self.P_Dr = self.opti.parameter(self.H)
 
         for k in range(self.H):
             p_H = self.X[0:2, k+1]
-            u_H = self.U[:,k]
-            self.J += mtimes([(p_H-self.P_3[:,k]).T, self.Q, (p_H-self.P_3[:,k])]) + mtimes([u_H.T, self.R, u_H]) 
+            self.J += self.Q[0]*(p_H[0]-self.P_3[0,k])**2 + self.Q[1]*(p_H[1]-self.P_3[1,k])**2 
+            # Race track constraints, does not work now, try soft constraints later
+            # self.opti.subject_to(mtimes(self.P_A[k, :], p_H) - self.P_b[k] <= self.P_Dr[k]*sqrt(self.P_A[k, 0]**2 + self.P_A[k, 1]**2))
+            # self.opti.subject_to(mtimes(self.P_A[k, :], p_H) - self.P_b[k] >= -self.P_Dl[k]*sqrt(self.P_A[k, 0]**2 + self.P_A[k, 1]**2))
+
+        for k in range(self.H-1):
+            self.J += self.R[0]*(self.U[0,k+1] - self.U[0,k])**2 + self.R[1]*(self.U[1,k+1] - self.U[1,k])**2 
             
         self.opti.minimize(self.J) 
         
@@ -158,8 +168,23 @@ class MPC_tracking:
         self.opti.subject_to(self.X[:,0] == self.P_1[0:3])
         
         p_opts = {'verbose_init': False}
-        s_opts = {'tol': 1e-3, 'print_level': 0, 'max_iter': 100}
+        s_opts = {'tol': 0.01, 'print_level': 0, 'max_iter': 100}
         self.opti.solver('ipopt', p_opts, s_opts)
+
+        # Warm up
+        state = np.array([self.x, self.y, self.th])
+        input = np.array([self.v, self.delta])
+        self.opti.set_value(self.P_1, state)
+        self.opti.set_value(self.P_2, input)
+        self.opti.set_value(self.P_3, self.ref[:, 0:self.H])
+        self.opti.set_value(self.P_A, self.A[0:self.H, :])
+        self.opti.set_value(self.P_b, self.b[0:self.H])
+        self.opti.set_value(self.P_Dl, self.Dl[0:self.H])        
+        self.opti.set_value(self.P_Dr, self.Dr[0:self.H])
+        
+        sol = self.opti.solve()
+        self.opti.set_initial(self.U, sol.value(self.U))
+        self.opti.set_initial(self.X, sol.value(self.X))
 
     def solveMPC(self):
         state = np.array([self.x, self.y, self.th])
@@ -167,29 +192,31 @@ class MPC_tracking:
         self.opti.set_value(self.P_1, state)
         self.opti.set_value(self.P_2, control)
         self.opti.set_value(self.P_3, self.ref[:, self.idx:self.idx+self.H])
-        sol = self.opti.solve()
-        sol = sol.value(self.U)
-        self.v = sol[0,0]
-        self.delta = sol[1,0]
+        self.opti.set_value(self.P_A, self.A[self.idx:self.idx+self.H, :])
+        self.opti.set_value(self.P_b, self.b[self.idx:self.idx+self.H])
+        self.opti.set_value(self.P_Dl, self.Dl[self.idx:self.idx+self.H])        
+        self.opti.set_value(self.P_Dr, self.Dr[self.idx:self.idx+self.H])
+        try:
+            sol = self.opti.solve()
+        except RuntimeError:
+            print("An exception occurred")
+            control = self.opti.debug.value(self.U)
+        else:
+            control = sol.value(self.U)
+            self.opti.set_initial(self.X, np.hstack((sol.value(self.X)[:,1:], sol.value(self.X)[:,-1:])))
+            self.opti.set_initial(self.U, np.hstack((sol.value(self.U)[:,1:], sol.value(self.U)[:,-1:])))
+        self.v = control[0,0]
+        self.delta = control[1,0]
+
 
     def run(self):
-        if self.start == 1:
-            if self.idx < self.wp_len:
-                self.solveMPC()
-                self.idx += 1
-                self.drive_msg.header.stamp = rospy.Time.now()
-                self.drive_msg.drive.speed = self.v
-                self.drive_msg.drive.steering_angle = self.delta 
-                rospy.loginfo("steer %.3f - speed %1.3f", self.drive_msg.drive.steering_angle, self.drive_msg.drive.speed)
-            else:
-                self.idx = 0
-                self.solveMPC(self.ref[:, self.idx:self.idx+self.H])
-                self.idx += 1
-                self.drive_msg.header.stamp = rospy.Time.now()
-                self.drive_msg.drive.speed = self.v
-                self.drive_msg.drive.steering_angle = self.delta 
-                rospy.loginfo("steer %.3f - speed %1.3f", self.drive_msg.drive.steering_angle, self.drive_msg.drive.speed)
-
+        if self.start == 1 and self.idx < self.wp_len:
+            self.solveMPC()
+            self.idx += 1
+            self.drive_msg.header.stamp = rospy.Time.now()
+            self.drive_msg.drive.speed = self.v
+            self.drive_msg.drive.steering_angle = self.delta 
+            # rospy.loginfo("steer %.3f - speed %1.3f", self.drive_msg.drive.steering_angle, self.drive_msg.drive.speed)
         else:
             self.drive_msg.header.stamp = rospy.Time.now()
             self.drive_msg.drive.steering_angle = 0.0
@@ -198,15 +225,15 @@ class MPC_tracking:
         self.drive_pub.publish(self.drive_msg)
 
 def main():
-    atexit.register(shutdown)
-    rospy.init_node('pure_pursuit_node')
+    # atexit.register(shutdown)
+    rospy.init_node('mpc_node')
     car = MPC_tracking()
-    car.set_weight(10*np.eye(2), np.diag([0.1, 2]))
+    car.set_weight(np.array([10,10]), np.array([1, 10]))
     car.formulate_mpc()
     rate = rospy.Rate(1/car.T)
     while not rospy.is_shutdown():
         car.run()
-        file.write('%f, %f, %f, %f, %f, %f, %f, %f\n' % (car.x, car.y, car.th, car.v, car.delta, car.gt_x, car.gt_y, car.gt_th))
+        # file.write('%f, %f, %f, %f, %f, %f, %f, %f\n' % (car.x, car.y, car.th, car.v, car.delta, car.gt_x, car.gt_y, car.gt_th))
         rate.sleep()
 
 if __name__ == '__main__':
