@@ -40,10 +40,10 @@ class MPC_tracking:
         self.ramp_v_min = -5*self.T; self.ramp_v_max = 5*self.T
         self.ramp_delta_min = -np.pi*self.T; self.ramp_delta_max = np.pi*self.T
 
-        self.J = 0; # Objective function
+        self.J = 0 # Objective function
         self.g = [] # Constraints
-        self.Q = 0
-        self.R = 0
+        self.Q = 0 # Weights in the ojective function
+        self.R = 0 # Weights in the ojective function
 
         self.servo_offset = 0.0
         self.start = 0
@@ -110,29 +110,35 @@ class MPC_tracking:
         euler = tf.transformations.euler_from_quaternion(quaternion)
         self.th = euler[2] 
 
+    ## This function is to set the weights in the MPC prolem
     def set_weight(self, Q, R):
         self.Q = Q
         self.R = R
     
+    ## This function is to formulate MPC problem with Casadi
     def formulate_mpc(self):
+        # This lock is to create the function for the system dynamics (bicycle model)
         x = SX.sym('x'); y = SX.sym('y'); phi = SX.sym('phi')
         v = SX.sym('v'); delta = SX.sym('delta') 
         state = np.array([x, y, phi])
         control = np.array([v, delta])
         beta = np.arctan(self.lr/(self.lf+self.lr)*np.tan(delta))
         rhs = np.array([v*np.cos(phi+beta), v*np.sin(phi+beta), v*np.sin(beta)/self.lr])*self.T + state
-        f_dyn = Function('f_dyn', [state,control], [rhs])
+        f_dyn = Function('f_dyn', [state,control], [rhs]) # This is the function for system dynamics
         
-        self.opti = casadi.Opti()
-        self.U = self.opti.variable(2, self.H)
-        self.X = self.opti.variable(3, self.H+1)
-        self.P_1 = self.opti.parameter(3)
-        self.P_2 = self.opti.parameter(2)
-        self.P_3 = self.opti.parameter(2, self.H)
-        self.P_A = self.opti.parameter(self.H, 2)
-        self.P_b = self.opti.parameter(self.H)
-        self.P_Dl = self.opti.parameter(self.H)
-        self.P_Dr = self.opti.parameter(self.H)
+        self.opti = casadi.Opti() # Opti stack in Casadi for nonlinear MPC
+        self.U = self.opti.variable(2, self.H) # Symbolic variable for inputs (speed and steering angle) over a control horizon
+        self.X = self.opti.variable(3, self.H+1) # Symbolic variable for states (x, y and heading angle) over a control horizon
+        self.P_1 = self.opti.parameter(3) # Symbolic parameters for initial condition (current states)
+        self.P_2 = self.opti.parameter(2) # Symbolic parameters for the last inputs
+        self.P_3 = self.opti.parameter(2, self.H) # Symbolic parameters for desired trajectories over a control horizon
+        self.P_A = self.opti.parameter(self.H, 2) # Symbolic parameters for safety constraints (not used now)
+        self.P_b = self.opti.parameter(self.H) # Symbolic parameters for safety constraints (not used now)
+        self.P_Dl = self.opti.parameter(self.H) # Symbolic parameters for safety constraints (not used now)
+        self.P_Dr = self.opti.parameter(self.H) # Symbolic parameters for safety constraints (not used now)
+
+        # Formulate the objective function, note that sum over a control horizon 
+        # Objective function: J = sum ( Q[0]*(x_k+1,ref - x_ref)^2 +  Q[1]*(y_k+1 - y_k+1,ref)^2  + R[0]*(v_k+1 - v_k)^2 + R[1]*(delta_k+1 - delta_k)^2 )
 
         for k in range(self.H):
             p_H = self.X[0:2, k+1]
@@ -140,15 +146,16 @@ class MPC_tracking:
             # Race track constraints, does not work now, try soft constraints later
             # self.opti.subject_to(mtimes(self.P_A[k, :], p_H) - self.P_b[k] <= self.P_Dr[k]*sqrt(self.P_A[k, 0]**2 + self.P_A[k, 1]**2))
             # self.opti.subject_to(mtimes(self.P_A[k, :], p_H) - self.P_b[k] >= -self.P_Dl[k]*sqrt(self.P_A[k, 0]**2 + self.P_A[k, 1]**2))
-
         for k in range(self.H-1):
             self.J += self.R[0]*(self.U[0,k+1] - self.U[0,k])**2 + self.R[1]*(self.U[1,k+1] - self.U[1,k])**2 
             
-        self.opti.minimize(self.J) 
+        self.opti.minimize(self.J) # Set that objective function to the optimizer
         
+        # Define dynamics constraint in the optimizer
         for k in range(self.H):
             self.opti.subject_to(self.X[:,k+1] == f_dyn(self.X[:,k], self.U[:,k]))
             
+        # State and input constraints like bound constraints
         self.opti.subject_to(self.v_min <= self.U[0,:])
         self.opti.subject_to(self.U[0,:] <= self.v_max)
             
@@ -165,16 +172,21 @@ class MPC_tracking:
         self.opti.subject_to(self.ramp_delta_min <= self.U[1,0] - self.P_2[1])
         self.opti.subject_to(self.U[1,0] - self.P_2[1] <= self.ramp_delta_max)
 
+        # Initial condition constraints
         self.opti.subject_to(self.X[:,0] == self.P_1[0:3])
         
+        # Some options for the solver
         p_opts = {'verbose_init': False}
         s_opts = {'tol': 0.01, 'print_level': 0, 'max_iter': 100}
         self.opti.solver('ipopt', p_opts, s_opts)
 
         # Warm up
+        # Get the current states and inputs
         state = np.array([self.x, self.y, self.th])
         input = np.array([self.v, self.delta])
-        self.opti.set_value(self.P_1, state)
+
+        # Set the values for all the parameters (defined at the beginning of this function)
+        self.opti.set_value(self.P_1, state) 
         self.opti.set_value(self.P_2, input)
         self.opti.set_value(self.P_3, self.ref[:, 0:self.H])
         self.opti.set_value(self.P_A, self.A[0:self.H, :])
@@ -182,13 +194,19 @@ class MPC_tracking:
         self.opti.set_value(self.P_Dl, self.Dl[0:self.H])        
         self.opti.set_value(self.P_Dr, self.Dr[0:self.H])
         
+        # Call the solver
         sol = self.opti.solve()
+        # Set the solution obtained as the initial guess for the next time
         self.opti.set_initial(self.U, sol.value(self.U))
         self.opti.set_initial(self.X, sol.value(self.X))
 
+    ## This function is to solve the MPC at every time step, note that we formulate MPC once, then can use multiple time with different parameters 
     def solveMPC(self):
+        # Get the current states and inputs
         state = np.array([self.x, self.y, self.th])
         control = np.array([self.v, self.delta])
+
+        # Set values for all the parameters in the optimizer
         self.opti.set_value(self.P_1, state)
         self.opti.set_value(self.P_2, control)
         self.opti.set_value(self.P_3, self.ref[:, self.idx:self.idx+self.H])
@@ -196,19 +214,24 @@ class MPC_tracking:
         self.opti.set_value(self.P_b, self.b[self.idx:self.idx+self.H])
         self.opti.set_value(self.P_Dl, self.Dl[self.idx:self.idx+self.H])        
         self.opti.set_value(self.P_Dr, self.Dr[self.idx:self.idx+self.H])
+
+        # Call the solver, use try catch to avoid errors
         try:
             sol = self.opti.solve()
         except RuntimeError:
-            print("An exception occurred")
+            print("An exception occurred") # That means an errors occurs when solving the problem
             control = self.opti.debug.value(self.U)
         else:
             control = sol.value(self.U)
+            # Set the solution obtained as the initial guess for the next time (so called warm-starting)
             self.opti.set_initial(self.X, np.hstack((sol.value(self.X)[:,1:], sol.value(self.X)[:,-1:])))
             self.opti.set_initial(self.U, np.hstack((sol.value(self.U)[:,1:], sol.value(self.U)[:,-1:])))
+
+        # MPC is solved, now use the first elements in each vector as the control input to control the vehicles
         self.v = control[0,0]
         self.delta = control[1,0]
 
-
+    ## In this function, we will call MPC to compute the control inputs
     def run(self):
         if self.start == 1 and self.idx < self.wp_len:
             self.solveMPC()
